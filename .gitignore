@@ -1,0 +1,4 @@
+node_modules/
+.fixture/
+*.log
+.DS_Store
