@@ -228,6 +228,7 @@ function runRules(root, files, texts) {
     title: 'Live provider credential found in source',
     consequence: 'A live secret in source allows direct billable use of the account and, for payment keys, movement of real money.',
     action: 'Rotate the credential immediately, then remove it from the working tree and from git history.',
+    prodOnly: true, root,
   });
 
   // 3. Committed .env files carrying values
@@ -270,6 +271,7 @@ function runRules(root, files, texts) {
     title: 'Secret exposed through a public environment prefix',
     consequence: 'Variables with a public prefix are compiled into the browser bundle. This value is readable by every visitor with developer tools open.',
     action: 'Move the value to a server-only variable and access it from a server route or action.',
+    prodOnly: true, root,
   });
 
   // 5. Supabase service role key reachable from client code
@@ -280,6 +282,7 @@ function runRules(root, files, texts) {
     consequence: 'The service role key bypasses row level security entirely. In a client bundle it grants any visitor full read and write access to every table.',
     action: 'Restrict the service role key to server routes, and use the anon key with row level security from the client.',
     filter: (_m, _t, file) => isClientReachable(rel(file), texts.get(file)),
+    prodOnly: true, root,
   });
 
   // 6. Tables created without row level security

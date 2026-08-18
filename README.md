@@ -93,6 +93,7 @@ are the important half.
 | Route calling `requireUserId(req)` | AUTH-1 |
 | Route returning 401 for a bad bearer token | AUTH-1 |
 | Migration creating a table named `WebhookEvent` | PAY-1 |
+| Dummy credentials inside `test/` or `fixtures/` | SEC-2, SEC-4, SEC-5 |
 
 That control list exists because every entry on it was once a real false
 positive. Calibrating against ten production repositories cut criticals on one
