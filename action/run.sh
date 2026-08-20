@@ -7,7 +7,6 @@ LT_PATH="${LT_PATH:-.}"
 LT_FAIL_ON="${LT_FAIL_ON:-critical}"
 LT_AUDIT="${LT_AUDIT:-false}"
 LT_ANNOTATE="${LT_ANNOTATE:-true}"
-LT_PACKAGE_SPEC="${LT_PACKAGE_SPEC:-launch-triage@1.1.0}"
 
 case "$LT_AUDIT" in
   true|false) ;;
@@ -32,4 +31,4 @@ else
   args+=(--no-annotate)
 fi
 
-npm exec --yes --package "$LT_PACKAGE_SPEC" -- launch-triage "${args[@]}"
+node "$GITHUB_ACTION_PATH/scan.mjs" "${args[@]}"

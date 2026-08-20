@@ -1,201 +1,436 @@
 #!/usr/bin/env node
-/**
- * Calibration test. Asserts both directions:
- *   - planted defects are found
- *   - deliberately correct code is NOT flagged
- *
- * The second half is the one that matters. A scanner that reports everything is
- * worthless, and a false critical in front of a technical reader costs more
- * than a missed medium.
- */
+import test from 'node:test';
+import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { makeFixture } from './make-fixture.mjs';
+import { dependencyAuditFailureDetail, dependencyAuditFinding, jsonOutputPath, redact } from '../scan.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, '..');
-const scan = join(here, '..', 'scan.mjs');
-const work = mkdtempSync(join(tmpdir(), 'launch-triage-'));
-const app = join(work, 'app');
-const out = join(work, 'report.md');
+const scan = join(repo, 'scan.mjs');
 
-makeFixture(app);
-execFileSync('node', [scan, app, '--out', out, '--json'], { stdio: 'ignore' });
-const { findings } = JSON.parse(readFileSync(out.replace(/\.md$/, '.json'), 'utf8'));
-const ids = new Set(findings.map((f) => f.id));
-const files = findings.map((f) => f.file.replace(app + '/', ''));
-
-const MUST_FIND = ['SEC-1', 'SEC-2', 'SEC-3', 'SEC-4', 'SEC-5', 'DATA-1', 'DATA-2', 'AUTH-1', 'PAY-1', 'OPS-1', 'QUAL-1'];
-const MUST_NOT_FLAG = [
-  'src/lib/db-admin.ts',                        // server-only module
-  'src/app/api/clients/route.ts',               // requireUserId guard
-  'src/app/api/jobs/run/route.ts',              // returns 401
-  'supabase/migrations/0002_webhook_events.sql', // a table, not an endpoint
-];
-
-let failed = 0;
-for (const id of MUST_FIND) {
-  if (!ids.has(id)) { console.error(`MISS   ${id} was not reported`); failed++; }
-}
-for (const id of ['SEC-1', 'SEC-2', 'SEC-3']) {
-  const finding = findings.find((item) => item.id === id);
-  if (finding?.severity !== 'High' || !finding.title.includes('git state cannot be verified')) {
-    console.error(`STATE  ${id} in a non-git directory must be High without claiming it was committed`);
-    failed++;
-  }
-}
-for (const f of MUST_NOT_FLAG) {
-  if (files.includes(f)) { console.error(`FALSE  ${f} should not have been flagged`); failed++; }
+function workspace(t) {
+  const root = mkdtempSync(join(tmpdir(), 'launch-triage-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  return root;
 }
 
-// Exit codes. CI has to be able to tell a real finding from a broken tool, so
-// tool errors are 2 and findings are 1. Publishing a scanner that fails a
-// pipeline incorrectly would undo the whole point of the precision work.
-const clean = join(work, 'clean');
-makeFixture(clean);
-for (const f of ['service-account.json', '.env', 'src/lib/uploader.js', 'src/lib/db-browser.ts',
-                 'src/app/config.ts', 'src/app/api/invoices/route.ts',
-                 'src/app/api/webhooks/payments/route.ts', 'src/lib/sync.ts',
-                 'supabase/migrations/0001_init.sql', 'tsconfig.json']) {
-  rmSync(join(clean, f), { force: true });
+function run(args, cwd = repo) {
+  return spawnSync(process.execPath, [scan, ...args], { cwd, encoding: 'utf8' });
 }
 
-const exitCode = (args) =>
-  spawnSync('node', [scan, ...args], { stdio: 'ignore' }).status;
-
-const CODES = [
-  ['defects, --fail-on critical', 1, [app, '--out', join(work, 'x1.md'), '--fail-on', 'critical']],
-  ['defects, --fail-on none',     0, [app, '--out', join(work, 'x2.md'), '--fail-on', 'none']],
-  ['defects, no threshold',       0, [app, '--out', join(work, 'x3.md')]],
-  ['clean, --fail-on critical',   0, [clean, '--out', join(work, 'x4.md'), '--fail-on', 'critical']],
-  ['unknown --fail-on value',     2, [app, '--out', join(work, 'x5.md'), '--fail-on', 'wrong']],
-  ['missing path',                2, [join(work, 'does-not-exist')]],
-  ['missing --fail-on value',     2, [app, '--out', join(work, 'x6.md'), '--fail-on']],
-  ['missing --out value',         2, [app, '--out']],
-  ['unknown option',              2, [app, '--out', join(work, 'x7.md'), '--surprise', 'yes']],
-];
-for (const [desc, want, args] of CODES) {
-  const got = exitCode(args);
-  if (got !== want) { console.error(`EXIT   ${desc}: expected ${want}, got ${got}`); failed++; }
-}
-
-// A bad threshold must be rejected before any scanning happens.
-if (existsSync(join(work, 'x5.md'))) {
-  console.error('EXIT   unknown --fail-on wrote a report; it must validate before scanning');
-  failed++;
-}
-for (const file of ['x6.md', 'x7.md']) {
-  if (existsSync(join(work, file))) {
-    console.error(`EXIT   invalid arguments wrote ${file}; validation must happen before scanning`);
-    failed++;
-  }
-}
-
-// Git exposure states. A tracked path is not proof that a newly added value
-// was committed, so exercise HEAD, index, history, and working tree separately.
-const gitRepo = join(work, 'git-state');
-const gitFile = (path, content) => {
-  const full = join(gitRepo, path);
+function write(root, path, content) {
+  const full = join(root, path);
   mkdirSync(dirname(full), { recursive: true });
   writeFileSync(full, content);
-};
-const git = (args) => execFileSync('git', args, { cwd: gitRepo, stdio: 'ignore' });
-mkdirSync(gitRepo, { recursive: true });
-git(['init', '-q']);
-git(['config', 'user.name', 'Launch Triage Tests']);
-git(['config', 'user.email', 'tests@example.invalid']);
-gitFile('src/config.js', 'export const enabled = true;\n');
-git(['add', '.']);
-git(['commit', '-qm', 'clean baseline']);
+}
 
-const stateKey = 'AKIA' + 'Q'.repeat(16);
-const stagedKey = 'AKIA' + 'R'.repeat(16);
-const workingKey = 'AKIA' + 'S'.repeat(16);
-const scanGitState = (label) => {
-  const stateOut = join(work, `${label}.md`);
-  execFileSync('node', [scan, gitRepo, '--out', stateOut, '--json'], { stdio: 'ignore' });
-  return JSON.parse(readFileSync(stateOut.replace(/\.md$/, '.json'), 'utf8')).findings;
-};
-const assertState = (label, path, severity, title, consequence) => {
-  const finding = scanGitState(label).find((item) => item.id === 'SEC-2' && item.file.endsWith(path));
-  if (!finding || finding.severity !== severity || finding.title !== title || !finding.consequence.includes(consequence)) {
-    console.error(`STATE  ${label}: expected ${severity} "${title}" for ${path}`);
-    failed++;
+function git(root, args) {
+  return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+}
+
+function initGit(root, paths) {
+  git(root, ['init', '-q']);
+  git(root, ['add', '--', ...paths]);
+  git(root, ['-c', 'user.name=Launch Triage Tests', '-c', 'user.email=tests@example.invalid', 'commit', '-qm', 'Initial fixture']);
+}
+
+function scanToJson(root, out, extra = []) {
+  const result = run([root, '--out', out, '--json', '--date', '2026-08-20', ...extra]);
+  const jsonPath = jsonOutputPath(out);
+  const payload = [0, 1, 2].includes(result.status)
+    ? JSON.parse(readFileSync(jsonPath, 'utf8'))
+    : null;
+  return { result, payload, jsonPath };
+}
+
+test('calibration fixture covers every non-network rule and keeps controls clean', (t) => {
+  const work = workspace(t);
+  const app = join(work, 'app');
+  const out = join(work, 'report.md');
+  makeFixture(app);
+
+  const { result, payload } = scanToJson(app, out);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(payload.counts, { critical: 12, high: 4, medium: 5 });
+
+  const actual = payload.findings.map(({ severity, id, file }) => `${severity}\t${id}\t${file}`);
+  assert.deepEqual(actual, [
+    'Critical\tAUTH-1\tsrc/app/api/authors/delete/route.ts',
+    'Critical\tAUTH-1\tsrc/app/api/invoices/route.ts',
+    'Critical\tAUTH-1\tsrc/app/api/leadership/members/route.ts',
+    'Critical\tAUTH-1\tsrc/app/api/orders/update-status/route.ts',
+    'Critical\tDATA-1\tsupabase/migrations/0001_init.sql',
+    'Critical\tDATA-2\tsupabase/migrations/0001_init.sql',
+    'Critical\tPAY-1\tsrc/app/api/webhooks/payments/route.ts',
+    'Critical\tSEC-1\tservice-account.json',
+    'Critical\tSEC-2\tsrc/lib/uploader.js',
+    'Critical\tSEC-4\tsrc/app/config.ts',
+    'Critical\tSEC-5\tsrc/lib/admin-client.ts',
+    'Critical\tSEC-5\tsrc/lib/db-browser.ts',
+    'High\tOPS-1\tsrc/lib/sync.ts',
+    'High\tOPS-2\tpackage.json',
+    'High\tPAY-2\tsrc/app/api/webhooks/payments/route.ts',
+    'High\tREL-1\tapp.json',
+    'Medium\tOPS-3\tpackage.json',
+    'Medium\tPERF-1\tsrc/lib/list-invoices.ts',
+    'Medium\tPERF-2\tsrc/lib/send-batch.ts',
+    'Medium\tQUAL-1\ttsconfig.json',
+    'Medium\tSEC-3\t.env',
+  ]);
+
+  const dataFinding = payload.findings.find(({ id }) => id === 'DATA-1');
+  assert.doesNotMatch(dataFinding.title, /account|WebhookEvent/i, 'later RLS migration and protected table must stay clean');
+  const flaggedFiles = new Set(payload.findings.map(({ file }) => file));
+  for (const clean of [
+    'src/lib/db-admin.ts',
+    'src/app/api/clients/route.ts',
+    'src/app/api/jobs/run/route.ts',
+    'src/app/api/status/route.ts',
+    'src/app/api/webhooks/verified/route.ts',
+    'src/lib/webhook-client.ts',
+    'supabase/migrations/0002_webhook_events.sql',
+    'supabase/migrations/0003_account.sql',
+  ]) {
+    assert.equal(flaggedFiles.has(clean), false, `${clean} should stay clean`);
   }
+});
+
+test('reports and JSON never expose detected credential values', (t) => {
+  const work = workspace(t);
+  const app = join(work, 'app');
+  const out = join(work, 'report.md');
+  makeFixture(app);
+  const { result, jsonPath } = scanToJson(app, out);
+  assert.equal(result.status, 0, result.stderr);
+
+  const combined = `${readFileSync(out, 'utf8')}\n${readFileSync(jsonPath, 'utf8')}`;
+  for (const secret of [
+    'p@ssw0rd!',
+    'hunter2',
+    'AKIA' + 'IOSFODNN7EXAMPLE'.slice(0, 16),
+    'MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQ',
+  ]) {
+    assert.equal(combined.includes(secret), false, `${secret} must be redacted`);
+  }
+  assert.match(combined, /DB_PASSWORD=<redacted>/);
+  assert.equal(readFileSync(jsonPath, 'utf8').includes(work), false, 'JSON paths must be relative');
+});
+
+test('JSON output never overwrites a custom Markdown report', (t) => {
+  const work = workspace(t);
+  const app = join(work, 'app');
+  const out = join(work, 'report.txt');
+  makeFixture(app);
+  const { result, jsonPath } = scanToJson(app, out);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(jsonPath, `${out}.json`);
+  assert.match(readFileSync(out, 'utf8'), /^# Launch Triage report/);
+  assert.equal(JSON.parse(readFileSync(jsonPath, 'utf8')).schemaVersion, 1);
+  assert.equal(jsonOutputPath('/tmp/report.MD'), '/tmp/report.json');
+  assert.equal(jsonOutputPath('/tmp/report'), '/tmp/report.json');
+});
+
+test('CLI validates help, version, options, targets, dates, and finding thresholds', (t) => {
+  const work = workspace(t);
+  const app = join(work, 'app');
+  makeFixture(app);
+
+  const help = run(['--help']);
+  assert.equal(help.status, 0);
+  assert.match(help.stdout, /Usage:/);
+  assert.equal(run(['--version']).stdout.trim(), '1.2.0');
+
+  for (const args of [
+    ['--bogus'],
+    [app, '--out'],
+    [app, '--client', '--json'],
+    [app, '--date', '2026-02-30'],
+    [app, '--fail-on', 'unknown'],
+    [app, '--annotate', '--no-annotate'],
+    [app, 'another-path'],
+  ]) {
+    const result = run(args);
+    assert.equal(result.status, 2, `${args.join(' ')} should fail`);
+    assert.match(result.stderr, /Error:/);
+  }
+
+  const fileTarget = run([join(app, 'package.json')]);
+  assert.equal(fileTarget.status, 2);
+  assert.match(fileTarget.stderr, /must be a directory/);
+
+  const empty = join(work, 'empty');
+  mkdirSync(empty);
+  const emptyTarget = run([empty]);
+  assert.equal(emptyTarget.status, 2);
+  assert.match(emptyTarget.stderr, /No supported source files/);
+
+  const threshold = run([app, '--out', join(work, 'threshold.md'), '--fail-on', 'high']);
+  assert.equal(threshold.status, 1);
+
+  const disabledThreshold = run([app, '--out', join(work, 'none.md'), '--fail-on', 'none']);
+  assert.equal(disabledThreshold.status, 0);
+});
+
+test('partial coverage is reported and cannot produce a successful clean exit', (t) => {
+  const work = workspace(t);
+  const app = join(work, 'app');
+  const hiddenKey = 'AKIA' + 'OVERSIZEDSOURCE1'.slice(0, 16);
+  write(app, 'package.json', '{"name":"partial-coverage"}\n');
+  write(app, 'src/large.js', `${'x'.repeat(601 * 1024)}\nexport const key = "${hiddenKey}";\n`);
+
+  const out = join(work, 'partial.md');
+  const { result, payload } = scanToJson(app, out);
+  assert.equal(result.status, 2);
+  assert.equal(payload.coverage.status, 'partial');
+  assert.equal(payload.coverage.skippedCount, 1);
+  assert.deepEqual(payload.coverage.skipped, [{
+    file: 'src/large.js',
+    reason: 'larger than the 614400-byte limit',
+  }]);
+  assert.match(readFileSync(out, 'utf8'), /This scan is incomplete and exits with code 2/);
+  assert.match(result.stderr, /Coverage incomplete/);
+});
+
+test('git exposure distinguishes committed values from staged-only values and nested roots', (t) => {
+  const work = workspace(t);
+  const root = join(work, 'repo');
+  mkdirSync(root);
+  write(root, 'app/package.json', '{"name":"nested"}\n');
+  write(root, 'app/src/config.js', 'export const mode = "safe";\n');
+  initGit(root, ['app']);
+
+  const stagedKey = 'AKIA' + 'STAGEDVALUE123456'.slice(0, 16);
+  write(root, 'app/src/config.js', `export const key = "${stagedKey}";\n`);
+  git(root, ['add', '--', 'app/src/config.js']);
+
+  const staged = scanToJson(join(root, 'app'), join(work, 'staged.md'));
+  assert.equal(staged.result.status, 0, staged.result.stderr);
+  const stagedFinding = staged.payload.findings.find(({ id }) => id === 'SEC-2');
+  assert.equal(stagedFinding.severity, 'Medium');
+  assert.match(stagedFinding.consequence, /no matching value detected/);
+
+  git(root, ['-c', 'user.name=Launch Triage Tests', '-c', 'user.email=tests@example.invalid', 'commit', '-qm', 'Add synthetic key']);
+  const committed = scanToJson(join(root, 'app'), join(work, 'committed.md'));
+  assert.equal(committed.result.status, 0, committed.result.stderr);
+  const committedFinding = committed.payload.findings.find(({ id }) => id === 'SEC-2');
+  assert.equal(committedFinding.severity, 'Critical');
+  assert.match(committedFinding.consequence, /current git commit/);
+
+  const replacementKey = 'AKIA' + 'REPLACEDVALUE6543'.slice(0, 16);
+  write(root, 'app/src/config.js', `export const key = "${replacementKey}";\n`);
+  git(root, ['add', '--', 'app/src/config.js']);
+
+  const replaced = scanToJson(join(root, 'app'), join(work, 'replaced.md'));
+  assert.equal(replaced.result.status, 0, replaced.result.stderr);
+  const replacedFinding = replaced.payload.findings.find(({ id }) => id === 'SEC-2');
+  assert.equal(replacedFinding.severity, 'Medium');
+  assert.match(replacedFinding.consequence, /no matching value detected/);
+});
+
+test('git exposure matches the complete private key and exact env assignment', (t) => {
+  const work = workspace(t);
+  const root = join(work, 'repo');
+  const header = ['-----BEGIN', 'PRIVATE', 'KEY-----'].join(' ');
+  const footer = ['-----END', 'PRIVATE', 'KEY-----'].join(' ');
+  const shared = 'MIISharedSyntheticPayloadLine1234567890=';
+  const key = (suffix) => `${header}\n${shared}\n${suffix}\n${footer}\n`;
+
+  write(root, 'app/package.json', '{"name":"exact-git-values"}\n');
+  write(root, 'app/key.pem', key('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'));
+  write(root, 'app/.env', 'DB_PASSWORD=safe-old-value\n');
+  initGit(root, ['app']);
+
+  const committed = scanToJson(join(root, 'app'), join(work, 'exact-committed.md'));
+  assert.equal(committed.payload.findings.find(({ id }) => id === 'SEC-1').severity, 'Critical');
+  assert.equal(committed.payload.findings.find(({ id }) => id === 'SEC-3').severity, 'Critical');
+
+  write(root, 'app/key.pem', key('BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB'));
+  write(root, 'app/.env', 'DB_PASSWORD=a\n');
+  git(root, ['add', '--', 'app/key.pem', 'app/.env']);
+
+  const replaced = scanToJson(join(root, 'app'), join(work, 'exact-replaced.md'));
+  assert.equal(replaced.payload.findings.find(({ id }) => id === 'SEC-1').severity, 'Medium');
+  assert.equal(replaced.payload.findings.find(({ id }) => id === 'SEC-3').severity, 'Medium');
+});
+
+test('credentials are checked outside production paths and test-mode keys are not called live', (t) => {
+  const work = workspace(t);
+  const app = join(work, 'app');
+  const aws = 'AKIA' + 'NONPRODFIXTURE123'.slice(0, 16);
+  const workflowKey = 'AKIA' + 'WORKFLOWFIXTURE1'.slice(0, 16);
+  const stripe = ['sk', 'test', 'syntheticvalue123456789012'].join('_');
+  write(app, 'package.json', '{"name":"credential-scope"}\n');
+  write(app, 'test/config.js', `export const key = "${aws}";\n`);
+  write(app, '.github/workflows/leak.yml', `env:\n  ACCESS_KEY: "${workflowKey}"\n`);
+  write(app, 'src/payments.js', `export const key = "${stripe}";\n`);
+  initGit(app, ['.']);
+
+  const { payload } = scanToJson(app, join(work, 'credential-scope.md'));
+  const nonProduction = payload.findings.find(({ id, file }) => id === 'SEC-2' && file === 'test/config.js');
+  const workflow = payload.findings.find(({ id, file }) => id === 'SEC-2' && file === '.github/workflows/leak.yml');
+  const testMode = payload.findings.find(({ id, file }) => id === 'SEC-2' && file === 'src/payments.js');
+  assert.equal(nonProduction.severity, 'Critical');
+  assert.equal(workflow.severity, 'Critical');
+  assert.equal(testMode.severity, 'High');
+  assert.equal(testMode.title, 'Provider credential found in source');
+  assert.doesNotMatch(testMode.title, /live/i);
+});
+
+test('arrow handlers, unused guards, and webhook lookalikes do not bypass rules', (t) => {
+  const work = workspace(t);
+  const app = join(work, 'app');
+  write(app, 'package.json', '{"name":"handler-precision"}\n');
+  write(app, 'src/app/api/orders/route.ts', `import { getUser } from "./auth";
+export const POST = async (req: Request) => Response.json(await req.json());
+function getUser() { return { id: "unused" }; }
+`);
+  write(app, 'src/app/api/mixed/route.ts', `export async function POST() {
+  const user = await requireUser();
+  return Response.json({ user });
+}
+export const DELETE = async () => Response.json({ deleted: true });
+`);
+  write(app, 'src/app/api/webhooks/fake/route.ts', `function verifySignature(_value: string) { return true; }
+const verifier = { verifySignature(_value: string) { return true; } };
+const makeHash = () => createHmac("sha256", "unused");
+function unusedSafety(event: { id: string }) {
+  verifySignature(event);
+  saveIfNew(event.id);
+}
+export const POST = async (req: Request) => {
+  const event = await req.json();
+  const idempotentMode = true;
+  console.log(event.id, makeHash, verifier, idempotentMode); // stripe.webhooks.constructEvent(req)
+  await fulfil(event);
+  return Response.json({ ok: true });
 };
+`);
+  write(app, 'src/app/api/webhooks/verified/route.ts', `export const POST = async (req: Request) => {
+  const event = new Webhook(process.env.WEBHOOK_SECRET).verify(await req.text(), {});
+  await saveIfNew(event.id);
+  return Response.json({ ok: true });
+};
+`);
 
-gitFile('src/config.js', `export const key = "${stateKey}";\n`);
-assertState('state-working', '/src/config.js', 'Medium', 'Provider credential is present only in the working tree', 'not found in HEAD, the git index, or repository history');
-git(['add', 'src/config.js']);
-assertState('state-staged', '/src/config.js', 'High', 'Provider credential is staged for commit', 'in the git index but not in HEAD or prior history');
-git(['commit', '-qm', 'stage secret for state test']);
-assertState('state-committed', '/src/config.js', 'Critical', 'Provider credential is committed in HEAD', 'current committed revision');
-gitFile('src/config.js', 'export const enabled = true;\n');
-git(['add', 'src/config.js']);
-git(['commit', '-qm', 'remove secret for state test']);
-gitFile('src/config.js', `export const key = "${stateKey}";\n`);
-assertState('state-history', '/src/config.js', 'Critical', 'Provider credential remains in git history', 'found in repository history');
+  const { payload } = scanToJson(app, join(work, 'handler-precision.md'));
+  const idsFor = (file) => payload.findings.filter((finding) => finding.file === file).map(({ id }) => id);
+  assert.deepEqual(idsFor('src/app/api/orders/route.ts'), ['AUTH-1']);
+  assert.deepEqual(idsFor('src/app/api/mixed/route.ts'), ['AUTH-1']);
+  assert.deepEqual(idsFor('src/app/api/webhooks/fake/route.ts'), ['PAY-1', 'PAY-2']);
+  assert.deepEqual(idsFor('src/app/api/webhooks/verified/route.ts'), []);
+});
 
-gitFile('src/staged.js', `export const key = "${stagedKey}";\n`);
-git(['add', 'src/staged.js']);
-assertState('state-new-staged', '/src/staged.js', 'High', 'Provider credential is staged for commit', 'in the git index but not in HEAD or prior history');
-gitFile('src/working.js', `export const key = "${workingKey}";\n`);
-assertState('state-new-working', '/src/working.js', 'Medium', 'Provider credential is present only in the working tree', 'not found in HEAD, the git index, or repository history');
+test('comments, policy settings, and env templates do not become secret findings', (t) => {
+  const work = workspace(t);
+  const app = join(work, 'app');
+  write(app, 'package.json', '{"name":"secret-controls"}\n');
+  write(app, 'src/app/settings.ts', `"use client";
+// Never reference SUPABASE_SERVICE_ROLE_KEY from this module.
+export const passwordMinLength = process.env.NEXT_PUBLIC_PASSWORD_MIN_LENGTH;
+`);
+  write(app, '.env.example', 'NEXT_PUBLIC_STRIPE_SECRET_KEY=your_secret_key\n');
 
-// Distribution smoke test. The source file working locally is not enough:
-// users receive the npm tarball and invoke the executable through npx. Pack the
-// exact publish payload, assert its contents, then execute its declared bin.
-let packed = null;
-const npmEnv = { ...process.env, npm_config_dry_run: 'false' };
-try {
-  [packed] = JSON.parse(execFileSync('npm', ['pack', '--json', '--pack-destination', work], {
+  const { payload } = scanToJson(app, join(work, 'secret-controls.md'));
+  const secretFindings = payload.findings.filter(({ id }) => id === 'SEC-4' || id === 'SEC-5');
+  assert.deepEqual(secretFindings, []);
+});
+
+test('DATA-1 severity requires production client-reachable database usage', (t) => {
+  const work = workspace(t);
+  const app = join(work, 'app');
+  write(app, 'package.json', JSON.stringify({ dependencies: { '@supabase/supabase-js': '2.0.0' } }));
+  write(app, 'migrations/001.sql', 'CREATE TABLE profile (id uuid primary key);\n');
+  write(app, 'src/lib/db-admin.ts', 'import "server-only";\nimport { createClient } from "@supabase/supabase-js";\n');
+
+  const serverOnly = scanToJson(app, join(work, 'server.md'));
+  assert.equal(serverOnly.payload.findings.find(({ id }) => id === 'DATA-1').severity, 'Medium');
+
+  write(app, 'src/lib/firebase-browser.ts', '"use client";\nimport { getFirestore } from "firebase/firestore";\n');
+  const unrelatedClientDb = scanToJson(app, join(work, 'firebase.md'));
+  assert.equal(unrelatedClientDb.payload.findings.find(({ id }) => id === 'DATA-1').severity, 'Medium');
+
+  write(app, 'src/lib/db-browser.ts', '"use client";\nimport { createClient } from "@supabase/supabase-js";\n');
+  const browser = scanToJson(app, join(work, 'browser.md'));
+  assert.equal(browser.payload.findings.find(({ id }) => id === 'DATA-1').severity, 'Critical');
+});
+
+test('requested dependency audits record failures and DEP-1 parsing is explicit', (t) => {
+  const work = workspace(t);
+  const app = join(work, 'app');
+  makeFixture(app);
+  const audited = scanToJson(app, join(work, 'audit.md'), ['--audit']);
+  assert.equal(audited.result.status, 2);
+  assert.equal(audited.payload.audit.status, 'failed');
+  assert.match(readFileSync(join(work, 'audit.md'), 'utf8'), /Dependency audit: Failed/);
+
+  const finding = dependencyAuditFinding({
+    metadata: { vulnerabilities: { critical: 1, high: 2, moderate: 3 } },
+  }, '/repo/package.json');
+  assert.equal(finding.id, 'DEP-1');
+  assert.equal(finding.severity, 'High');
+  assert.match(finding.title, /^3 high or critical/);
+
+  const hostileDetail = 'registry https://user:private-token@example.invalid/npm\n/work/private-project';
+  const safeDetail = dependencyAuditFailureDetail({ error: { detail: hostileDetail } });
+  assert.equal(safeDetail, 'npm audit returned an error response without vulnerability metadata');
+  assert.doesNotMatch(safeDetail, /private-token|private-project/);
+});
+
+test('Launch Triage can scan itself without app-only false positives', (t) => {
+  const work = workspace(t);
+  const self = scanToJson(repo, join(work, 'self.md'));
+  assert.equal(self.result.status, 0, self.result.stderr);
+  assert.deepEqual(self.payload.findings, []);
+});
+
+test('packed CLI and composite action execute the release payload', (t) => {
+  const work = workspace(t);
+  const app = join(work, 'app');
+  makeFixture(app);
+  const npmEnv = { ...process.env, npm_config_dry_run: 'false' };
+
+  const [packed] = JSON.parse(execFileSync('npm', [
+    'pack', '--json', '--pack-destination', work,
+  ], {
     cwd: repo,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     env: npmEnv,
   }));
-} catch (error) {
-  console.error(`PACK   npm pack failed: ${error.stderr || error.message}`);
-  failed++;
-}
 
-if (packed) {
   const packedFiles = new Map(packed.files.map((file) => [file.path, file]));
-  for (const path of ['LICENSE', 'README.md', 'package.json', 'scan.mjs']) {
-    if (!packedFiles.has(path)) {
-      console.error(`PACK   ${path} is missing from the npm tarball`);
-      failed++;
-    }
-  }
-  if ((packedFiles.get('scan.mjs')?.mode & 0o111) === 0) {
-    console.error('PACK   scan.mjs is not executable in the npm tarball');
-    failed++;
-  }
+  assert.deepEqual([...packedFiles.keys()].sort(), [
+    'CHANGELOG.md',
+    'CONTRIBUTING.md',
+    'LICENSE',
+    'README.md',
+    'SECURITY.md',
+    'examples/sample-report.md',
+    'package.json',
+    'scan.mjs',
+  ]);
+  assert.notEqual(packedFiles.get('scan.mjs').mode & 0o111, 0, 'scan.mjs must be executable');
 
+  const packagePath = join(work, packed.filename);
+  const installRoot = join(work, 'installed-package');
+  execFileSync('npm', [
+    'install', '--prefix', installRoot, '--ignore-scripts', packagePath,
+  ], { cwd: work, stdio: ['ignore', 'pipe', 'pipe'], env: npmEnv });
   const packageReport = join(work, 'package-report.md');
-  const packagedRun = spawnSync('npm', [
-    'exec', '--offline', '--yes', '--package', join(work, packed.filename), '--',
-    'launch-triage', clean, '--out', packageReport, '--fail-on', 'none',
+  const packagedRun = spawnSync(join(installRoot, 'node_modules', '.bin', 'launch-triage'), [
+    app, '--out', packageReport, '--fail-on', 'none',
   ], { cwd: work, encoding: 'utf8', env: npmEnv });
+  assert.equal(packagedRun.status, 0, packagedRun.stderr);
+  assert.equal(existsSync(packageReport), true, 'packaged CLI must write its report');
 
-  if (packagedRun.status !== 0) {
-    console.error(`PACK   packaged launch-triage command exited ${packagedRun.status}: ${packagedRun.stderr || packagedRun.error || ''}`);
-    failed++;
-  } else if (!existsSync(packageReport)) {
-    console.error('PACK   packaged launch-triage command did not write a report');
-    failed++;
-  }
-
-  // Exercise the same shell entrypoint used by the composite action. The false
-  // case is important because GitHub sets GITHUB_ACTIONS=true automatically.
   const actionYaml = readFileSync(join(repo, 'action.yml'), 'utf8');
-  if (!actionYaml.includes("LT_PACKAGE_SPEC: 'launch-triage@1.1.0'") || actionYaml.includes("default: 'latest'")) {
-    console.error('ACTION action.yml must pin the npm package to launch-triage@1.1.0');
-    failed++;
-  }
+  assert.match(actionYaml, /bash \"\$GITHUB_ACTION_PATH\/action\/run\.sh\"/);
+  assert.doesNotMatch(actionYaml, /launch-triage@latest/);
 
   const runAction = (shouldAnnotate) => {
     const runnerTemp = join(work, `action-${shouldAnnotate}`);
@@ -208,9 +443,9 @@ if (packed) {
         env: {
           ...npmEnv,
           GITHUB_ACTIONS: 'true',
+          GITHUB_ACTION_PATH: repo,
           GITHUB_STEP_SUMMARY: join(runnerTemp, 'summary.md'),
           RUNNER_TEMP: runnerTemp,
-          LT_PACKAGE_SPEC: join(work, packed.filename),
           LT_PATH: app,
           LT_FAIL_ON: 'none',
           LT_AUDIT: 'false',
@@ -221,24 +456,19 @@ if (packed) {
   };
 
   const actionOff = runAction(false);
-  if (actionOff.result.status !== 0 || /::(?:error|warning) file=/.test(actionOff.result.stdout)) {
-    console.error(`ACTION annotate=false failed or emitted annotations: ${actionOff.result.stderr || actionOff.result.stdout}`);
-    failed++;
-  } else if (!existsSync(join(actionOff.runnerTemp, 'launch-triage.md'))) {
-    console.error('ACTION annotate=false did not write the report artifact');
-    failed++;
-  }
+  assert.equal(actionOff.result.status, 0, actionOff.result.stderr);
+  assert.doesNotMatch(actionOff.result.stdout, /::(?:error|warning) file=/);
+  assert.equal(existsSync(join(actionOff.runnerTemp, 'launch-triage.md')), true);
+  assert.equal(existsSync(join(actionOff.runnerTemp, 'summary.md')), true);
 
   const actionOn = runAction(true);
-  if (actionOn.result.status !== 0 || !/::(?:error|warning) file=/.test(actionOn.result.stdout)) {
-    console.error(`ACTION annotate=true did not emit annotations: ${actionOn.result.stderr || actionOn.result.stdout}`);
-    failed++;
-  } else if (!existsSync(join(actionOn.runnerTemp, 'launch-triage.md'))) {
-    console.error('ACTION annotate=true did not write the report artifact');
-    failed++;
-  }
-}
+  assert.equal(actionOn.result.status, 0, actionOn.result.stderr);
+  assert.match(actionOn.result.stdout, /::(?:error|warning) file=/);
+  assert.equal(existsSync(join(actionOn.runnerTemp, 'launch-triage.md')), true);
+  assert.equal(existsSync(join(actionOn.runnerTemp, 'summary.md')), true);
+});
 
-rmSync(work, { recursive: true, force: true });
-if (failed) { console.error(`\n${failed} assertion(s) failed`); process.exit(1); }
-console.log(`ok. ${MUST_FIND.length} rules fired, ${MUST_NOT_FLAG.length} controls stayed clean, ${CODES.length} exit codes correct, git states correct, packaged CLI and action executable.`);
+test('redaction handles punctuation-heavy and URL credentials', () => {
+  assert.equal(redact('DB_PASSWORD=p@ssw0rd!'), 'DB_PASSWORD=<redacted>');
+  assert.equal(redact('DATABASE_URL=postgres://alice:hunter2@db/acme'), 'DATABASE_URL=<redacted>');
+});
