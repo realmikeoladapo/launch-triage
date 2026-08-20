@@ -12,6 +12,7 @@ import { dependencyAuditFailureDetail, dependencyAuditFinding, jsonOutputPath, r
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, '..');
 const scan = join(repo, 'scan.mjs');
+const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
 function workspace(t) {
   const root = mkdtempSync(join(tmpdir(), 'launch-triage-'));
@@ -394,7 +395,7 @@ test('packed CLI and composite action execute the release payload', (t) => {
   makeFixture(app);
   const npmEnv = { ...process.env, npm_config_dry_run: 'false' };
 
-  const [packed] = JSON.parse(execFileSync('npm', [
+  const [packed] = JSON.parse(execFileSync(npmCommand, [
     'pack', '--json', '--pack-destination', work,
   ], {
     cwd: repo,
@@ -418,11 +419,17 @@ test('packed CLI and composite action execute the release payload', (t) => {
 
   const packagePath = join(work, packed.filename);
   const installRoot = join(work, 'installed-package');
-  execFileSync('npm', [
+  execFileSync(npmCommand, [
     'install', '--prefix', installRoot, '--ignore-scripts', packagePath,
   ], { cwd: work, stdio: ['ignore', 'pipe', 'pipe'], env: npmEnv });
   const packageReport = join(work, 'package-report.md');
-  const packagedRun = spawnSync(join(installRoot, 'node_modules', '.bin', 'launch-triage'), [
+  const installedBin = join(
+    installRoot,
+    'node_modules',
+    '.bin',
+    process.platform === 'win32' ? 'launch-triage.cmd' : 'launch-triage',
+  );
+  const packagedRun = spawnSync(installedBin, [
     app, '--out', packageReport, '--fail-on', 'none',
   ], { cwd: work, encoding: 'utf8', env: npmEnv });
   assert.equal(packagedRun.status, 0, packagedRun.stderr);

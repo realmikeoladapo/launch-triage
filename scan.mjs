@@ -309,7 +309,8 @@ function gitFacts(root) {
     } catch { return null; }
   };
   const topLevel = run(root, ['rev-parse', '--show-toplevel']);
-  if (topLevel === null) {
+  const prefixOutput = run(root, ['rev-parse', '--show-prefix']);
+  if (topLevel === null || prefixOutput === null) {
     return {
       isRepo: false,
       exposure: () => ({
@@ -319,21 +320,8 @@ function gitFacts(root) {
     };
   }
 
-  let gitRoot;
-  let scanRoot;
-  try {
-    gitRoot = realpathSync(topLevel.trim());
-    scanRoot = realpathSync(root);
-  } catch {
-    return {
-      isRepo: true,
-      exposure: () => ({
-        severity: 'Medium',
-        state: 'present locally; reachable git history could not be inspected',
-      }),
-    };
-  }
-  const prefix = relative(gitRoot, scanRoot).replace(/\\/g, '/');
+  const gitRoot = topLevel.trim();
+  const prefix = prefixOutput.trim().replace(/\\/g, '/').replace(/\/$/, '');
   const toRepoPath = (targetPath) => prefix ? `${prefix}/${targetPath}` : targetPath;
   const cache = new Map();
 
