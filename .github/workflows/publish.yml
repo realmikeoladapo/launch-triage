@@ -1,0 +1,54 @@
+name: Publish to npm
+
+# This workflow is for releases after the first manual npm publication and
+# trusted publisher setup. See docs/first-release.md for the bootstrap sequence.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # Required for npm trusted publishing. This is what mints the short-lived
+  # OIDC token, and what lets npm attach a verified provenance attestation
+  # linking the tarball to this exact workflow run and commit.
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      # Trusted publishing needs npm 11.5.1 or later. Ubuntu images ship an
+      # older npm with Node 22, so pin it explicitly rather than hoping.
+      - name: Use an npm that supports trusted publishing
+        run: |
+          npm install -g npm@latest
+          npm --version
+
+      - name: Test before publishing
+        run: npm test
+
+      - name: Verify the version is not already published
+        run: |
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "::error::$NAME@$VERSION is already on npm. Bump the version."
+            exit 1
+          fi
+          echo "Publishing $NAME@$VERSION"
+
+      - name: Publish
+        # No NPM_TOKEN. Authentication is the OIDC token from id-token: write,
+        # and provenance is generated automatically by trusted publishing.
+        run: npm publish --access public

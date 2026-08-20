@@ -1,0 +1,51 @@
+# Composite action. Runs the matching published npm version rather than a
+# moving latest tag, so a pinned Action revision stays deterministic.
+# Checkout with fetch-depth: 0. The secret rules grade findings against
+# `git log --all`, and a shallow clone makes that check silently wrong.
+
+name: 'Launch Triage'
+description: 'Static production-readiness triage. Finds the defects that matter before launch, with evidence for every claim.'
+author: 'Mike Oladapo'
+
+branding:
+  icon: 'shield'
+  color: 'green'
+
+inputs:
+  path:
+    description: 'Path to scan, relative to the workspace.'
+    required: false
+    default: '.'
+  fail-on:
+    description: 'Fail the job when a finding at or above this severity exists: critical, high, medium, or none.'
+    required: false
+    default: 'critical'
+  audit:
+    description: 'Also run npm audit in the target. Slower, needs network.'
+    required: false
+    default: 'false'
+  annotate:
+    description: 'Emit workflow annotations so findings appear inline on the pull request diff.'
+    required: false
+    default: 'true'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Run Launch Triage
+      shell: bash
+      env:
+        LT_PATH: ${{ inputs.path }}
+        LT_FAIL_ON: ${{ inputs['fail-on'] }}
+        LT_AUDIT: ${{ inputs.audit }}
+        LT_ANNOTATE: ${{ inputs.annotate }}
+        LT_PACKAGE_SPEC: 'launch-triage@1.1.0'
+      run: bash "$GITHUB_ACTION_PATH/action/run.sh"
+
+    - name: Upload report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: launch-triage-report
+        path: ${{ runner.temp }}/launch-triage.md
+        if-no-files-found: ignore

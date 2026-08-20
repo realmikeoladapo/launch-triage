@@ -23,7 +23,7 @@
  *   - Rules are capped so one noisy pattern cannot pad the report.
  */
 
-import { readFileSync, readdirSync, statSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, writeFileSync, appendFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join, relative, extname, basename, resolve, dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
@@ -109,7 +109,7 @@ function add(f) {
   findings.push(f);
 }
 
-function scanPattern({ files, texts, re, ext, id, severity, title, consequence, action, filter, prodOnly, root }) {
+function scanPattern({ files, texts, re, ext, id, severity, title, consequence, action, filter, prodOnly, root, trackGit }) {
   let hits = 0;
   for (const file of files) {
     if (ext && !ext.includes(extname(file))) continue;
@@ -120,23 +120,25 @@ function scanPattern({ files, texts, re, ext, id, severity, title, consequence, 
     let m;
     while ((m = rx.exec(text)) !== null) {
       if (filter && !filter(m, text, file)) continue;
-      add({
+      const finding = {
         id, severity, title,
         file, line: lineOf(text, m.index),
         excerpt: redact(excerptAt(text, m.index)),
         consequence, action,
-      });
+      };
+      if (trackGit) {
+        Object.defineProperty(finding, '_evidenceToken', { value: m[0], enumerable: false });
+      }
+      add(finding);
       if (++hits >= MAX_PER_RULE) return;
       break; // one hit per file keeps the report readable
     }
   }
 }
 
-// Git reality. The scanner reads the filesystem, but every secret finding makes
-// a claim about the repository ("committed", "stays in git history"). A file
-// that is present on disk and correctly gitignored is a different, far less
-// severe problem, and asserting otherwise in front of a technical buyer is the
-// fastest way to lose the room. Two cheap calls, once per run.
+// Git reality. A tracked path is not proof that the value currently on disk was
+// committed. Check the exact detected value against HEAD, the index, and prior
+// history before describing its exposure.
 function gitFacts(root) {
   const run = (args) => {
     try {
@@ -145,13 +147,24 @@ function gitFacts(root) {
       });
     } catch { return null; }
   };
-  const tracked = run(['ls-files']);
-  if (tracked === null) return { isRepo: false, tracked: null, everCommitted: null };
-  const history = run(['log', '--all', '--pretty=format:', '--name-only']) || '';
+  const inside = run(['rev-parse', '--is-inside-work-tree']);
+  if (inside?.trim() !== 'true') return { isRepo: false };
+
+  const contains = (text, token) => typeof text === 'string' && token && text.includes(token);
   return {
     isRepo: true,
-    tracked: new Set(tracked.split('\n').filter(Boolean)),
-    everCommitted: new Set(history.split('\n').filter(Boolean)),
+    exposure(relPath, token) {
+      if (contains(run(['show', `HEAD:${relPath}`]), token)) return 'committed';
+
+      // Pickaxe searches for commits where this exact string was introduced or
+      // removed. It avoids treating an old version of the same path as proof
+      // that the current value was ever committed.
+      const history = run(['log', '--all', '--format=%H', `-S${token}`, '--', relPath]);
+      if (history?.trim()) return 'history';
+
+      if (contains(run(['show', `:${relPath}`]), token)) return 'staged';
+      return 'working';
+    },
   };
 }
 
@@ -203,22 +216,17 @@ function runRules(root, files, texts) {
   const usesDirectClientDb = [...texts.values()].some((t) =>
     /@supabase\/(supabase-js|ssr|auth-helpers)|createClientComponentClient|createBrowserClient|firebase\/firestore|PocketBase/.test(t));
 
-  // Exposure of a secret depends on whether git actually has it.
+  // Exposure of a secret depends on which git layer contains the exact value.
   const git = gitFacts(root);
-  const exposure = (relPath) => {
-    if (!git.isRepo) return { severity: 'Critical', state: 'in the working tree (not a git repository, so history could not be checked)' };
-    if (git.tracked.has(relPath)) return { severity: 'Critical', state: 'tracked by git and committed to the repository' };
-    if (git.everCommitted.has(relPath)) return { severity: 'Critical', state: 'untracked now but present in git history, so it is still recoverable from any clone' };
-    return { severity: 'Medium', state: 'present in the working tree but untracked and absent from git history, so it has not been distributed' };
-  };
 
-  // 1. Committed private keys and credential blocks
+  // 1. Private keys and credential blocks
   scanPattern({
     files, texts, id: 'SEC-1', severity: 'Critical',
     re: /-----BEGIN (RSA |EC |OPENSSH |PGP )?PRIVATE KEY-----/,
-    title: 'Private key committed to the repository',
-    consequence: 'Anyone with repository access, including any past collaborator or a leaked clone, holds the key permanently. Rotation is the only remedy after exposure.',
+    title: 'Private key found',
+    consequence: 'A private key is present. Its git state determines whether it has been distributed.',
     action: 'Remove the key, rotate the credential at the provider, and move it to environment configuration.',
+    trackGit: true,
   });
 
   // 2. Cloud provider access keys
@@ -228,7 +236,7 @@ function runRules(root, files, texts) {
     title: 'Live provider credential found in source',
     consequence: 'A live secret in source allows direct billable use of the account and, for payment keys, movement of real money.',
     action: 'Rotate the credential immediately, then remove it from the working tree and from git history.',
-    prodOnly: true, root,
+    prodOnly: true, root, trackGit: true,
   });
 
   // 3. Committed .env files carrying values
@@ -243,6 +251,7 @@ function runRules(root, files, texts) {
     const SECRET_KEY = /(KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL|PRIVATE|DSN|SALT|CLIENT_ID|ACCESS|AUTH|SIGNING|WEBHOOK)/;
     const PUBLIC_PREFIX = /^(NEXT_PUBLIC|VITE|EXPO_PUBLIC|REACT_APP|PUBLIC)_/;
     let m = null;
+    let evidenceToken = null;
     for (const line of text.split('\n')) {
       const kv = /^\s*([A-Z0-9_]+)\s*=\s*["']?([^\s"']+)/.exec(line);
       if (!kv) continue;
@@ -251,16 +260,19 @@ function runRules(root, files, texts) {
       if (PUBLIC_PREFIX.test(key) && !SECRET_KEY.test(key.replace(PUBLIC_PREFIX, ''))) continue;
       if (!SECRET_KEY.test(key) && value.length < 16) continue;
       m = { index: text.indexOf(line) };
+      evidenceToken = value;
       break;
     }
     if (!m) continue;
-    add({
+    const finding = {
       id: 'SEC-3', severity: 'Critical',
-      title: 'Environment file with real values is committed',
+      title: 'Environment file contains a secret',
       file: abs, line: lineOf(text, m.index), excerpt: redact(excerptAt(text, m.index)),
-      consequence: 'Every secret in this file is disclosed to anyone who can read the repository, and it stays in git history after deletion.',
+      consequence: 'An environment secret is present. Its git state determines whether it has been distributed.',
       action: 'Delete the file from the tree, add it to .gitignore, rotate every value, and purge it from history.',
-    });
+    };
+    Object.defineProperty(finding, '_evidenceToken', { value: evidenceToken, enumerable: false });
+    add(finding);
     break;
   }
 
@@ -495,20 +507,44 @@ function runRules(root, files, texts) {
     }
   }
 
-  // Ground every secret finding in what git actually contains. Severity and
-  // wording both depend on it, and a gitignored file is not a breach.
+  // Ground every secret finding in what git actually contains. Severity,
+  // title, and wording all depend on the layer holding this exact value.
+  const labels = {
+    'SEC-1': 'Private key',
+    'SEC-2': 'Provider credential',
+    'SEC-3': 'Environment secret',
+  };
   for (const f of findings) {
     if (!['SEC-1', 'SEC-2', 'SEC-3'].includes(f.id)) continue;
-    const e = exposure(rel(f.file));
-    f.severity = e.severity;
-    f.consequence = `This file is ${e.state}. ${
-      e.severity === 'Critical'
-        ? 'Anyone who can read the repository, including any past collaborator or a leaked clone, holds this value permanently, and deleting the file does not remove it. Rotation is the only remedy.'
-        : 'The immediate exposure is limited to this machine, so this is a hygiene and near-miss finding rather than a disclosure. It becomes critical the moment the ignore rule is changed or the file is force-added.'
-    }`;
-    f.action = e.severity === 'Critical'
-      ? 'Rotate the credential at the provider first, then remove the file from the tree and purge it from git history.'
-      : 'Confirm the ignore rule covers it permanently, and rotate the value if the machine or any backup of it has been shared.';
+    const label = labels[f.id];
+    const state = git.isRepo ? git.exposure(rel(f.file), f._evidenceToken) : 'unverified';
+
+    if (state === 'committed') {
+      f.severity = 'Critical';
+      f.title = `${label} is committed in HEAD`;
+      f.consequence = 'This exact value exists in the current committed revision. Anyone with repository access can recover it, and deleting the working file will not remove that exposure.';
+      f.action = 'Rotate the credential at the provider first, remove it from the tree, and purge it from git history.';
+    } else if (state === 'history') {
+      f.severity = 'Critical';
+      f.title = `${label} remains in git history`;
+      f.consequence = 'This exact value was found in repository history. It remains recoverable from existing clones even if the current revision no longer contains it.';
+      f.action = 'Rotate the credential at the provider first, then purge the value from git history and coordinate replacement clones.';
+    } else if (state === 'staged') {
+      f.severity = 'High';
+      f.title = `${label} is staged for commit`;
+      f.consequence = 'This exact value is in the git index but not in HEAD or prior history. It has not been committed yet, but the next commit would distribute it.';
+      f.action = 'Remove the value from the index and working tree, add the correct ignore rule, and rotate it if the staged content was shared elsewhere.';
+    } else if (state === 'working') {
+      f.severity = 'Medium';
+      f.title = `${label} is present only in the working tree`;
+      f.consequence = 'This exact value is on this machine but was not found in HEAD, the git index, or repository history. This is a local near miss, not evidence of repository disclosure.';
+      f.action = 'Remove it from the working tree or confirm the ignore rule covers it, and rotate it if this machine or its backups were shared.';
+    } else {
+      f.severity = 'High';
+      f.title = `${label} is present, but git state cannot be verified`;
+      f.consequence = 'This exact value is in the working tree, but the target is not a git repository. The scanner cannot determine whether it was distributed elsewhere.';
+      f.action = 'Move the value out of the project, establish how the directory was shared, and rotate it if any copy left this machine.';
+    }
   }
 }
 
@@ -638,27 +674,78 @@ third-party dashboards, or anything outside this repository.
 
 function parseArgs(argv) {
   const args = { _: [] };
+  const booleanFlags = new Set(['audit', 'json', 'annotate', 'no-annotate']);
+  const valueFlags = new Set(['out', 'client', 'product', 'fail-on']);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--audit') args.audit = true;
-    else if (a === '--json') args.json = true;
-    else if (a.startsWith('--')) args[a.slice(2)] = argv[++i];
-    else args._.push(a);
+    if (!a.startsWith('--')) {
+      args._.push(a);
+      continue;
+    }
+
+    const name = a.slice(2);
+    if (booleanFlags.has(name)) {
+      args[name] = true;
+      continue;
+    }
+    if (!valueFlags.has(name)) throw new Error(`Unknown option: ${a}`);
+
+    const value = argv[i + 1];
+    if (value === undefined || value.startsWith('--')) {
+      throw new Error(`Missing value for ${a}`);
+    }
+    args[name] = value;
+    i++;
   }
+  if (args._.length > 1) throw new Error(`Unexpected argument: ${args._[1]}`);
+  if (args.annotate && args['no-annotate']) throw new Error('Use either --annotate or --no-annotate, not both.');
   return args;
 }
 
+const RANK = { Critical: 3, High: 2, Medium: 1 };
+const THRESHOLD = { critical: 3, high: 2, medium: 1, none: 99 };
+
+/**
+ * GitHub Actions workflow commands. Findings render inline on the pull request
+ * diff, which is the difference between a report someone opens and a report
+ * someone reads.
+ */
+function annotate(findings, root) {
+  const esc = (s) => String(s).replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
+  for (const f of findings) {
+    const level = f.severity === 'Medium' ? 'warning' : 'error';
+    const file = relative(root, f.file).replace(/\\/g, '/');
+    const msg = esc(`${f.title}. ${f.consequence} Fix: ${f.action}`);
+    console.log(`::${level} file=${file},line=${f.line},title=${esc(`${f.id} ${f.severity}`)}::${msg}`);
+  }
+}
+
 function main() {
-  const args = parseArgs(process.argv.slice(2));
+  let args;
+  try {
+    args = parseArgs(process.argv.slice(2));
+  } catch (error) {
+    console.error(error.message);
+    process.exit(2);
+  }
   const target = args._[0];
   if (!target) {
-    console.error('Usage: node scan.mjs <repo-path> [--out file] [--client name] [--product name] [--audit] [--json]');
-    process.exit(1);
+    console.error('Usage: node scan.mjs <repo-path> [--out file] [--client name] [--product name] [--audit] [--json] [--fail-on critical|high|medium|none] [--annotate|--no-annotate]');
+    process.exit(2);
   }
   const root = resolve(target);
   if (!existsSync(root)) {
     console.error(`Path not found: ${root}`);
-    process.exit(1);
+    process.exit(2);
+  }
+
+  // Validate before scanning. A typo should not cost a full scan, and in CI a
+  // tool error must be distinguishable from a real finding.
+  const failOn = String(args['fail-on'] || 'none').toLowerCase();
+  const threshold = THRESHOLD[failOn];
+  if (threshold === undefined) {
+    console.error(`Unknown --fail-on value: ${failOn}. Use critical, high, medium, or none.`);
+    process.exit(2);
   }
 
   const files = collect(root);
@@ -691,6 +778,21 @@ function main() {
   console.log(`Report: ${outPath}`);
   if (!findings.length) {
     console.log('No findings. Confirm the scan reached real source before sending anything to a client.');
+  }
+
+  const inActions = process.env.GITHUB_ACTIONS === 'true';
+
+  if (findings.length && (args.annotate || (inActions && !args['no-annotate']))) annotate(findings, root);
+
+  // Render the whole report on the workflow run page.
+  if (inActions && process.env.GITHUB_STEP_SUMMARY) {
+    try { appendFileSync(process.env.GITHUB_STEP_SUMMARY, report + '\n'); } catch { /* non-fatal */ }
+  }
+
+  const worst = findings.reduce((m, f) => Math.max(m, RANK[f.severity] || 0), 0);
+  if (worst >= threshold) {
+    console.error(`Failing: found a finding at or above "${failOn}".`);
+    process.exit(1);
   }
 }
 

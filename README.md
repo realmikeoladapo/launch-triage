@@ -11,6 +11,23 @@ and real data.
 Zero dependencies. Node standard library only. It never executes the code it
 reads.
 
+## Run it
+
+From the project you want to check:
+
+```bash
+npx --yes launch-triage .
+```
+
+The report is written to `output/triage-<project>-<date>.md`. To choose the
+location or add project details:
+
+```bash
+npx --yes launch-triage /path/to/repo --out launch-triage.md --product "Acme App"
+```
+
+When working from a clone of this repository, you can run the source directly:
+
 ```bash
 node scan.mjs /path/to/repo --product "Acme App" --audit --json
 ```
@@ -22,10 +39,17 @@ node scan.mjs /path/to/repo --product "Acme App" --audit --json
 | `--product <name>` | Product name in the report header |
 | `--audit` | Also run `npm audit` in the target repo. Network, slower |
 | `--json` | Emit raw findings as JSON beside the report |
+| `--fail-on <level>` | Exit with code 1 for `critical`, `high`, or `medium` findings. Default: `none` |
+| `--annotate` | Emit GitHub Actions annotations for each finding |
+| `--no-annotate` | Suppress automatic annotations inside GitHub Actions |
 
 Output is a severity-ranked Markdown report where every finding carries a file,
 a line, and a redacted excerpt. See [examples/sample-report.md](examples/sample-report.md),
 generated from the synthetic fixture in `test/`.
+
+Exit code 0 means the scan completed and did not cross the chosen threshold.
+Exit code 1 means findings crossed `--fail-on`. Exit code 2 means the command
+itself could not run, for example because the path or threshold was invalid.
 
 ## What it checks
 
@@ -55,17 +79,17 @@ generated from the synthetic fixture in `test/`.
 The same pattern means very different things in different projects. Three rules
 grade themselves against context rather than reporting a fixed severity.
 
-**Secrets are graded against git, not the filesystem.** The scanner reads disk,
-but a secret finding makes a claim about the repository. A key that is present
-and correctly gitignored is a near miss, not a disclosure. So the secret rules
-run `git ls-files` and `git log --all --name-only` once, then grade:
+**Secrets are graded against git, not the path alone.** For the exact detected
+value, the scanner checks the current committed revision, prior history, the
+git index, and the working tree before describing its exposure:
 
 | Git state | Severity | Wording |
 | --- | --- | --- |
-| Tracked | Critical | committed to the repository |
-| Untracked but in history | Critical | still recoverable from any clone |
-| Untracked, never committed | Medium | present in the working tree, not distributed |
-| Not a git repository | Critical | history could not be checked |
+| Present in HEAD | Critical | committed in the current revision |
+| Present in prior history | Critical | still recoverable from existing clones |
+| Present in the index only | High | staged for the next commit |
+| Present in the working tree only | Medium | local near miss, not repository disclosure |
+| Not a git repository | High | distribution state cannot be verified |
 
 **Missing row level security depends on who reaches the database.** With a
 client-side SDK such as `@supabase/supabase-js` or Firestore, the anon key
@@ -95,14 +119,9 @@ are the important half.
 | Migration creating a table named `WebhookEvent` | PAY-1 |
 | Dummy credentials inside `test/` or `fixtures/` | SEC-2, SEC-4, SEC-5 |
 
-That control list exists because every entry on it was once a real false
-positive. Calibrating against ten production repositories cut criticals on one
-codebase from sixteen to two, and the twelve that disappeared were all wrong:
-duplicated findings from a git worktree, webhook rules firing on SQL migration
-files, six authorisation guards the patterns did not recognise, and two
-correctly gitignored files reported as committed. The regression test in the
-same pass confirmed a genuinely committed credential elsewhere still reported
-Critical.
+The generated fixture makes those controls reproducible in `npm test`. The same
+test suite creates temporary git histories for working-only, staged, committed,
+and historical secret states, then checks the severity and wording for each.
 
 ## Known limits
 

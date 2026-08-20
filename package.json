@@ -1,14 +1,43 @@
 {
   "name": "launch-triage",
-  "version": "1.0.0",
-  "description": "Static production-readiness triage for web and mobile codebases. Finds the defects that matter before launch, with evidence for every claim.",
-  "bin": { "launch-triage": "./scan.mjs" },
+  "version": "1.1.0",
+  "description": "Static production-readiness triage for web and mobile codebases. Grades findings against git state, not just the filesystem. Zero dependencies.",
+  "bin": {
+    "launch-triage": "scan.mjs"
+  },
   "type": "module",
-  "scripts": { "test": "node test/run.mjs" },
-  "files": ["scan.mjs", "README.md", "LICENSE"],
-  "keywords": ["security", "audit", "production-readiness", "nextjs", "supabase", "code-review", "static-analysis"],
+  "scripts": {
+    "test": "node test/run.mjs",
+    "prepublishOnly": "npm test"
+  },
+  "files": [
+    "scan.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "security",
+    "audit",
+    "production-readiness",
+    "nextjs",
+    "supabase",
+    "code-review",
+    "static-analysis"
+  ],
   "author": "Mike Oladapo (https://mikeoladapo.com)",
   "license": "MIT",
-  "repository": { "type": "git", "url": "git+https://github.com/realmikeoladapo/launch-triage.git" },
-  "engines": { "node": ">=18" }
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/realmikeoladapo/launch-triage.git"
+  },
+  "homepage": "https://github.com/realmikeoladapo/launch-triage#readme",
+  "bugs": {
+    "url": "https://github.com/realmikeoladapo/launch-triage/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  }
 }
