@@ -12,7 +12,6 @@ import { dependencyAuditFailureDetail, dependencyAuditFinding, jsonOutputPath, r
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, '..');
 const scan = join(repo, 'scan.mjs');
-const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
 function workspace(t) {
   const root = mkdtempSync(join(tmpdir(), 'launch-triage-'));
@@ -22,6 +21,16 @@ function workspace(t) {
 
 function run(args, cwd = repo) {
   return spawnSync(process.execPath, [scan, ...args], { cwd, encoding: 'utf8' });
+}
+
+function runNpm(args, options) {
+  if (process.env.npm_execpath) {
+    return execFileSync(process.execPath, [process.env.npm_execpath, ...args], options);
+  }
+  if (process.platform === 'win32') {
+    return execFileSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', 'npm', ...args], options);
+  }
+  return execFileSync('npm', args, options);
 }
 
 function write(root, path, content) {
@@ -395,7 +404,7 @@ test('packed CLI and composite action execute the release payload', (t) => {
   makeFixture(app);
   const npmEnv = { ...process.env, npm_config_dry_run: 'false' };
 
-  const [packed] = JSON.parse(execFileSync(npmCommand, [
+  const [packed] = JSON.parse(runNpm([
     'pack', '--json', '--pack-destination', work,
   ], {
     cwd: repo,
@@ -419,7 +428,7 @@ test('packed CLI and composite action execute the release payload', (t) => {
 
   const packagePath = join(work, packed.filename);
   const installRoot = join(work, 'installed-package');
-  execFileSync(npmCommand, [
+  runNpm([
     'install', '--prefix', installRoot, '--ignore-scripts', packagePath,
   ], { cwd: work, stdio: ['ignore', 'pipe', 'pipe'], env: npmEnv });
   const packageReport = join(work, 'package-report.md');
