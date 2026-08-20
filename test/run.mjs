@@ -440,7 +440,12 @@ test('packed CLI and composite action execute the release payload', (t) => {
   );
   const packagedRun = spawnSync(installedBin, [
     app, '--out', packageReport, '--fail-on', 'none',
-  ], { cwd: work, encoding: 'utf8', env: npmEnv });
+  ], {
+    cwd: work,
+    encoding: 'utf8',
+    env: npmEnv,
+    shell: process.platform === 'win32',
+  });
   assert.equal(packagedRun.status, 0, packagedRun.stderr);
   assert.equal(existsSync(packageReport), true, 'packaged CLI must write its report');
 
