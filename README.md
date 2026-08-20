@@ -1,123 +1,218 @@
 # Launch Triage
 
+[![CI](https://github.com/realmikeoladapo/launch-triage/actions/workflows/ci.yml/badge.svg)](https://github.com/realmikeoladapo/launch-triage/actions/workflows/ci.yml)
+[![MIT licence](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
+
 Static production-readiness triage for web and mobile codebases. It answers one
-question before a launch or a handover: **what is actually going to hurt, and
+question before a launch or handover: **what is actually going to hurt, and
 what is fine?**
 
-Built for the common 2026 situation where a product was prototyped quickly, in
-an AI builder or otherwise, and now has to survive real users, real payments,
-and real data.
+Launch Triage is built for products that moved quickly—through an AI builder,
+a prototype sprint, or otherwise—and now have to survive real users, payments,
+and data. It has zero runtime dependencies and never executes the source it
+inspects.
 
-Zero dependencies. Node standard library only. It never executes the code it
-reads.
+## Quick start
+
+Requires Node.js 22 or newer. Git is strongly recommended: without readable
+local history, credential findings remain unverified and are graded as local
+near misses rather than confirmed repository exposure.
+
+Run from source:
 
 ```bash
-node scan.mjs /path/to/repo --product "Acme App" --audit --json
+git clone https://github.com/realmikeoladapo/launch-triage.git
+cd launch-triage
+node scan.mjs /path/to/repo --product "Acme App" --json
 ```
+
+Published package (available from `v1.0.0`):
+
+```bash
+npx launch-triage@1 /path/to/repo --product "Acme App" --json
+
+# Or install it globally
+npm install --global launch-triage
+launch-triage /path/to/repo --product "Acme App" --json
+```
+
+The default Markdown report is written to
+`output/triage-<repository>-<local-date>.md`. See the
+[sample report](examples/sample-report.md).
+
+### Options
 
 | Flag | Effect |
 | --- | --- |
-| `--out <file>` | Write the report somewhere specific |
-| `--client <name>` | Client name in the report header |
-| `--product <name>` | Product name in the report header |
-| `--audit` | Also run `npm audit` in the target repo. Network, slower |
-| `--json` | Emit raw findings as JSON beside the report |
+| `--out <file>` | Write the Markdown report to a specific path |
+| `--client <name>` | Add a client name to the report header |
+| `--product <name>` | Override the product name inferred from the directory |
+| `--prepared-by <name>` | Add a reviewer or organisation to the report header |
+| `--date <YYYY-MM-DD>` | Override the local review date for reproducible reports |
+| `--audit` | Run `npm audit` when an npm lockfile is present |
+| `--json` | Write versioned, machine-readable JSON beside the report |
+| `--fail-on <severity>` | Exit `2` when a finding at or above `critical`, `high`, or `medium` is present |
+| `-h`, `--help` | Show CLI help |
+| `-v`, `--version` | Show the installed version |
 
-Output is a severity-ranked Markdown report where every finding carries a file,
-a line, and a redacted excerpt. See [examples/sample-report.md](examples/sample-report.md),
-generated from the synthetic fixture in `test/`.
+Exit code `0` means the scan completed; it does **not** mean the product is safe
+to launch. Exit code `1` means invalid input or an operational failure,
+including incomplete file coverage or a requested dependency audit that could
+not complete. Exit code `2` means the scan completed and the configured
+`--fail-on` threshold was met.
 
 ## What it checks
 
 | ID | Check |
 | --- | --- |
 | SEC-1 | Private key present |
-| SEC-2 | Live provider credential in source (AWS, Stripe, OpenAI, GitHub) |
-| SEC-3 | Environment file carrying a real secret |
+| SEC-2 | Provider credential in source (AWS, Stripe, OpenAI, GitHub) |
+| SEC-3 | Environment file carrying a secret-like value |
 | SEC-4 | Secret behind a public build prefix (`NEXT_PUBLIC_`, `VITE_`, `EXPO_PUBLIC_`) |
 | SEC-5 | Supabase service role key in client-reachable code |
 | DATA-1 | Tables created without row level security |
 | DATA-2 | Policy that evaluates to `USING (true)` |
-| AUTH-1 | Mutating API route with no authorisation check |
-| PAY-1 | Webhook without signature verification |
-| PAY-2 | Webhook without an idempotency guard |
+| AUTH-1 | Mutating API route with no recognised authentication guard |
+| PAY-1 | Webhook with no recognised signature verification |
+| PAY-2 | Webhook with no recognised idempotency guard |
 | OPS-1 | Empty catch block swallowing failures |
-| OPS-2 | No error monitoring dependency |
-| OPS-3 | No rate limiting on public endpoints |
+| OPS-2 | Deployable app with no recognised error-monitoring package |
+| OPS-3 | Request handlers with no recognised rate-limiting package |
 | PERF-1 | Query with no limit or range |
 | PERF-2 | Awaited call inside a loop |
-| QUAL-1 | TypeScript strict mode off |
-| REL-1 | Expo project with no build configuration |
+| QUAL-1 | TypeScript strict mode off or absent without an inherited config |
+| REL-1 | Expo project with no EAS build configuration |
 | DEP-1 | High or critical dependency vulnerabilities (`--audit` only) |
+
+Every finding includes a relative file path, line number, redacted excerpt,
+production consequence, and recommended action. Rules are capped so a noisy
+pattern cannot inflate the report.
 
 ## Severity is conditional, on purpose
 
-The same pattern means very different things in different projects. Three rules
-grade themselves against context rather than reporting a fixed severity.
+The same pattern can mean very different things in different projects. Launch
+Triage grades several rules against repository context rather than assigning a
+fixed severity.
 
-**Secrets are graded against git, not the filesystem.** The scanner reads disk,
-but a secret finding makes a claim about the repository. A key that is present
-and correctly gitignored is a near miss, not a disclosure. So the secret rules
-run `git ls-files` and `git log --all --name-only` once, then grade:
+### Git exposure is verified against content
 
-| Git state | Severity | Wording |
+The scanner reads the working tree, but it only calls a secret finding
+“committed” after a matching value is found in the current commit or reachable
+git history. A staged file or a new local edit to an old path is not treated as
+proof of distribution.
+
+| Verified state | Severity | Interpretation |
 | --- | --- | --- |
-| Tracked | Critical | committed to the repository |
-| Untracked but in history | Critical | still recoverable from any clone |
-| Untracked, never committed | Medium | present in the working tree, not distributed |
-| Not a git repository | Critical | history could not be checked |
+| Matching value in the current commit | Critical¹ | Present in the repository now |
+| Matching value in reachable history | Critical¹ | Recoverable from an affected clone |
+| Working tree or index only | Medium | Local near miss; distribution not verified |
+| Not a git repository or history unreadable | Medium | Exposure is unknown, not asserted |
 
-**Missing row level security depends on who reaches the database.** With a
-client-side SDK such as `@supabase/supabase-js` or Firestore, the anon key
-reaches Postgres directly, so absent RLS is full exposure and DATA-1 is
-Critical. Behind a server-only ORM against a private database it is defence in
-depth, and DATA-1 drops to Medium with wording that says so.
+¹ Recognised Stripe test-mode credentials are capped at High: they still grant
+account access, but are not described as production payment credentials.
 
-**Server-only modules are detected from source, not path.** A file that imports
-`server-only`, declares `"use server"`, or imports a Node built-in such as
-`fs/promises` cannot reach a browser bundle, so it is excluded from SEC-5.
+History checks are limited to commits reachable in the local clone. A shallow
+clone cannot prove what exists outside its available history.
 
-## Precision is the whole point
+### Missing RLS depends on real client reachability
 
-A scanner that reports everything is worthless. A false critical costs more
-than a missed medium, because it destroys trust in every other line of the
-report.
+Table creation and `ENABLE ROW LEVEL SECURITY` statements are aggregated across
+migrations. Missing RLS is Critical only when production client-reachable source
+actually imports a Supabase/PostgREST client. An unrelated Firestore or
+PocketBase client does not elevate SQL tables, and merely listing a package or
+importing it from a `server-only` module does not elevate the finding.
 
-`npm test` asserts both directions against a generated fixture: that planted
-defects are found, and that deliberately correct code stays clean. The controls
-are the important half.
+### Server-only modules are detected from source
 
-| Control | Must not be flagged |
-| --- | --- |
-| Module importing `server-only` | SEC-5 |
-| Route calling `requireUserId(req)` | AUTH-1 |
-| Route returning 401 for a bad bearer token | AUTH-1 |
-| Migration creating a table named `WebhookEvent` | PAY-1 |
-| Dummy credentials inside `test/` or `fixtures/` | SEC-2, SEC-4, SEC-5 |
+A module importing `server-only`, declaring `"use server"`, or importing a Node
+built-in such as `fs/promises` is excluded from client-reachability checks. An
+explicit `"use client"` directive wins over a reassuring filename: a file named
+`admin-client.ts` is still client code.
 
-That control list exists because every entry on it was once a real false
-positive. Calibrating against ten production repositories cut criticals on one
-codebase from sixteen to two, and the twelve that disappeared were all wrong:
-duplicated findings from a git worktree, webhook rules firing on SQL migration
-files, six authorisation guards the patterns did not recognise, and two
-correctly gitignored files reported as committed. The regression test in the
-same pass confirmed a genuinely committed credential elsewhere still reported
-Critical.
+## Precision is the point
+
+A scanner that reports everything is not useful. A false critical destroys
+trust in every other row, so the calibration suite asserts both directions:
+planted defects must be found, and deliberately correct controls must stay
+clean.
+
+Current controls include:
+
+- server-only database modules;
+- guarded routes and routes that return `401`;
+- exact public-by-design route segments;
+- webhook utilities that are not request handlers;
+- webhook handlers with a real verifier call;
+- RLS enabled in a later migration;
+- SQL migrations that merely contain the word “webhook”;
+- credentials assembled only inside tests and fixtures;
+- a self-scan of Launch Triage itself.
+
+The suite also locks down CLI errors, git state, redaction, JSON/Markdown output
+separation, deterministic ordering, and all 17 non-network rules. `DEP-1` is
+tested from representative npm audit metadata without relying on the network.
+
+Run it with:
+
+```bash
+npm test
+```
+
+## JSON contract
+
+`--json` writes a separate JSON file even when the Markdown output uses a
+non-`.md` extension. Version 1 includes:
+
+- `schemaVersion` and tool version;
+- review metadata and audit status;
+- severity counts, scanned file count, and complete/partial coverage details;
+- findings with paths relative to the scanned repository.
+
+Absolute workstation paths are intentionally omitted. Consumers should reject
+schema versions they do not understand.
+
+## Dependency audit behaviour
+
+`--audit` is opt-in because it uses the network and is slower. It requires
+`package-lock.json` or `npm-shrinkwrap.json`. The Markdown and JSON outputs say
+whether the audit was completed, not applicable, or failed; a failed requested
+audit is never presented as a clean result.
 
 ## Known limits
 
-- Static analysis only. It does not run the product, click through
-  authenticated flows, or test infrastructure.
-- AUTH-1 recognises guards by name or by the handler being able to return 401
-  or 403. A guard that does neither will still be reported.
-- A module that reads a service role key with no server-only marker is still
-  flagged, deliberately. Only a human can confirm it is never imported into a
-  client component.
-- Python and Ruby coverage is thinner than TypeScript coverage.
-- No finding does not mean no problem. It means no pattern matched.
+- Static analysis only. It does not run the product, click through authenticated
+  flows, inspect cloud configuration, or test infrastructure.
+- Pattern recognition is evidence for review, not proof that a vulnerability is
+  exploitable.
+- AUTH-1 recognises common guard calls and `401`/`403` responses. Custom access
+  controls may need human confirmation.
+- A service-role reference without a real server-only marker is flagged
+  deliberately; a filename alone is not a security boundary.
+- Git history checks see only commits available in the local clone.
+- Collection covers `.js`, `.jsx`, `.ts`, `.tsx`, `.mjs`, `.cjs`, `.astro`,
+  `.vue`, `.svelte`, `.sql`, `.py`, `.rb`, `.go`, `.php`, `.swift`, `.kt`,
+  `.java`, `.env*`, `.json`, `.yml`, `.yaml`, `.toml`, `.pem`, `.key`, `.p8`,
+  `.npmrc`, and common SSH private-key filenames. Symbolic links and unsupported
+  extensions are outside this configured boundary.
+- Dependency, build-output, cache, vendor, generated, editor, and test-worktree
+  directories and generated dependency lockfiles are intentionally excluded.
+  Supported files over 600 KiB or paths that cannot be read make coverage
+  Partial, are named in Markdown and JSON, and force exit code `1` instead of a
+  clean result.
+- Python, Ruby, Go, and PHP request-handler coverage is thinner than JavaScript
+  and TypeScript coverage.
+- No finding means no configured pattern matched—not that no problem exists.
 
-The report is a first pass, not a verdict. Open every flagged file and confirm
-the finding before you send it to anyone.
+Open every flagged file and confirm the finding before acting on or sharing a
+report. Never paste a real credential, private client source, or unsanitised
+report into a public issue.
+
+## Contributing and security
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before proposing a rule. Accuracy changes
+must include both a positive fixture and a false-positive control. Report tool
+vulnerabilities privately as described in [SECURITY.md](SECURITY.md); scanner
+accuracy reports should use synthetic examples.
 
 ## Licence
 

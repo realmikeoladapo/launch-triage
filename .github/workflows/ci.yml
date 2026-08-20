@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Node ${{ matrix.node }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            node: '22'
+          - os: ubuntu-latest
+            node: '24'
+          - os: ubuntu-latest
+            node: '26'
+          - os: windows-latest
+            node: '24'
+          - os: macos-latest
+            node: '24'
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+
+      - name: Check syntax
+        run: node --check scan.mjs
+
+      - name: Run calibration suite
+        run: npm test
+
+      - name: Verify generated example
+        if: matrix.os == 'ubuntu-latest' && matrix.node == '24'
+        run: |
+          npm run example
+          git diff --exit-code -- examples/sample-report.md
+
+      - name: Verify package contents and installed CLI
+        if: matrix.os == 'ubuntu-latest' && matrix.node == '24'
+        shell: bash
+        run: |
+          npm pack --dry-run
+          package_file="$(npm pack --silent)"
+          install_root="$RUNNER_TEMP/launch-triage-package"
+          mkdir -p "$install_root"
+          npm install --prefix "$install_root" "$GITHUB_WORKSPACE/$package_file"
+          "$install_root/node_modules/.bin/launch-triage" --version
+          "$install_root/node_modules/.bin/launch-triage" --help

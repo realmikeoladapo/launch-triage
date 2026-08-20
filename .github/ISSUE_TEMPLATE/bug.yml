@@ -1,0 +1,49 @@
+name: CLI bug or enhancement
+description: Report broken CLI behaviour or propose a focused improvement.
+title: "[CLI]: "
+labels: [cli]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Launch Triage version
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Request type
+      options:
+        - Bug
+        - Enhancement
+        - Documentation
+    validations:
+      required: true
+  - type: textarea
+    id: current
+    attributes:
+      label: Current behaviour
+      description: Include the command, exit code, and sanitised output.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: "Node 24, Windows 11"
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety confirmation
+      options:
+        - label: Logs and examples are sanitised and contain no credential or private client source.
+          required: true
