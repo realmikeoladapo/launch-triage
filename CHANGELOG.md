@@ -3,6 +3,16 @@
 All notable changes to Launch Triage are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.2.1] - 2026-08-21
+
+### Fixed
+
+- Package validation accepts the JSON formats returned by npm 11 and npm 12.
+- Release publishing uses an audited npm version and tests that exact toolchain
+  in CI.
+- The GitHub `v1.2.0` release stopped before npm publication. No
+  `launch-triage@1.2.0` package was published.
+
 ## [1.2.0] - 2026-08-21
 
 ### Added
@@ -35,5 +45,6 @@ All notable changes to Launch Triage are documented here. The project follows
 - Optional npm audit, JSON output, CI thresholds, and GitHub annotations.
 - Composite GitHub Action and OIDC-ready release workflow.
 
-[1.2.0]: https://www.npmjs.com/package/launch-triage/v/1.2.0
+[1.2.1]: https://www.npmjs.com/package/launch-triage/v/1.2.1
+[1.2.0]: https://github.com/realmikeoladapo/launch-triage/releases/tag/v1.2.0
 [1.1.0]: https://www.npmjs.com/package/launch-triage/v/1.1.0

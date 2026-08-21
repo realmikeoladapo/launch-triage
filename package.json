@@ -1,6 +1,6 @@
 {
   "name": "launch-triage",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Static production-readiness triage for web and mobile codebases. Finds the defects that matter before launch, with evidence for every claim.",
   "bin": { "launch-triage": "scan.mjs" },
   "type": "module",

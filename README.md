@@ -74,7 +74,7 @@ steps:
   - uses: actions/checkout@v4
     with:
       fetch-depth: 0
-  - uses: realmikeoladapo/launch-triage@v1.2.0
+  - uses: realmikeoladapo/launch-triage@v1.2.1
     with:
       path: .
       fail-on: critical
