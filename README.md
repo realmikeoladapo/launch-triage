@@ -64,20 +64,21 @@ threshold. It does **not** mean the product is safe to launch. Exit code `1`
 means findings crossed `--fail-on`. Exit code `2` means invalid input,
 incomplete file coverage, or another operational failure.
 
-## GitHub Action
+## GitHub Actions
 
-Pin the Action to a released version and check out full history so credential
-grading can inspect reachable commits:
+The composite Action is prepared for `1.2.0` but has not been released yet.
+Until the `v1` tag is available, run the verified npm release in your workflow.
+Check out full history so credential grading can inspect reachable commits:
 
 ```yaml
 steps:
   - uses: actions/checkout@v4
     with:
       fetch-depth: 0
-  - uses: realmikeoladapo/launch-triage@v1
+  - uses: actions/setup-node@v4
     with:
-      path: .
-      fail-on: critical
+      node-version: '22'
+  - run: npx --yes launch-triage@1.1.0 . --fail-on critical --annotate
 ```
 
 The Action uploads the Markdown report and adds inline annotations by default.
