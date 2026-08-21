@@ -1,0 +1,51 @@
+name: Missed finding
+description: Report a risky pattern that Launch Triage does not detect.
+title: "[Missed finding]: "
+labels: [false-negative]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Rotate any real exposed credential first. Then replace it with clearly synthetic data before filing this issue.
+  - type: input
+    id: version
+    attributes:
+      label: Launch Triage version
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: input
+    id: rule
+    attributes:
+      label: Existing or proposed rule ID
+      placeholder: "SEC-2 or new rule"
+    validations:
+      required: true
+  - type: textarea
+    id: reproducer
+    attributes:
+      label: Minimal synthetic reproducer
+      description: Include a safe file path and the smallest code that should be detected.
+    validations:
+      required: true
+  - type: textarea
+    id: consequence
+    attributes:
+      label: Production consequence
+      description: Explain the realistic failure without overstating certainty.
+    validations:
+      required: true
+  - type: textarea
+    id: control
+    attributes:
+      label: Likely false-positive control
+      description: Show a similar pattern that the rule must not flag.
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety confirmation
+      options:
+        - label: This report contains only synthetic data and no live credential or private client source.
+          required: true

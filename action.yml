@@ -1,5 +1,5 @@
-# Composite action. Runs the matching published npm version rather than a
-# moving latest tag, so a pinned Action revision stays deterministic.
+# Composite action. A pinned Action revision runs the scanner from the same
+# repository revision, so the code and workflow contract stay together.
 # Checkout with fetch-depth: 0. The secret rules grade findings against
 # `git log --all`, and a shallow clone makes that check silently wrong.
 
@@ -39,7 +39,6 @@ runs:
         LT_FAIL_ON: ${{ inputs['fail-on'] }}
         LT_AUDIT: ${{ inputs.audit }}
         LT_ANNOTATE: ${{ inputs.annotate }}
-        LT_PACKAGE_SPEC: 'launch-triage@1.1.0'
       run: bash "$GITHUB_ACTION_PATH/action/run.sh"
 
     - name: Upload report
