@@ -21,6 +21,7 @@ try {
     '--product', 'Example App',
     '--prepared-by', 'Example reviewer',
     '--date', '2026-08-20',
+    '--no-annotate',
   ], { stdio: 'inherit' });
 } finally {
   rmSync(work, { recursive: true, force: true });

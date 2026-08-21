@@ -3,9 +3,7 @@
 All notable changes to Launch Triage are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
-
-Planned as `1.2.0` after review and cross-platform CI pass.
+## [1.2.0] - 2026-08-21
 
 ### Added
 
@@ -37,4 +35,5 @@ Planned as `1.2.0` after review and cross-platform CI pass.
 - Optional npm audit, JSON output, CI thresholds, and GitHub annotations.
 - Composite GitHub Action and OIDC-ready release workflow.
 
+[1.2.0]: https://www.npmjs.com/package/launch-triage/v/1.2.0
 [1.1.0]: https://www.npmjs.com/package/launch-triage/v/1.1.0

@@ -66,19 +66,18 @@ incomplete file coverage, or another operational failure.
 
 ## GitHub Actions
 
-The composite Action is prepared for `1.2.0` but has not been released yet.
-Until the `v1` tag is available, run the verified npm release in your workflow.
-Check out full history so credential grading can inspect reachable commits:
+Pin the Action to the immutable release and check out full history so
+credential grading can inspect reachable commits:
 
 ```yaml
 steps:
   - uses: actions/checkout@v4
     with:
       fetch-depth: 0
-  - uses: actions/setup-node@v4
+  - uses: realmikeoladapo/launch-triage@v1.2.0
     with:
-      node-version: '22'
-  - run: npx --yes launch-triage@1.1.0 . --fail-on critical --annotate
+      path: .
+      fail-on: critical
 ```
 
 The Action uploads the Markdown report and adds inline annotations by default.
