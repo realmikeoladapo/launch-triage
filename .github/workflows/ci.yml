@@ -67,6 +67,29 @@ jobs:
           package_file="$(npm pack --silent)"
           install_root="$RUNNER_TEMP/launch-triage-package"
           mkdir -p "$install_root"
-          npm install --prefix "$install_root" "$GITHUB_WORKSPACE/$package_file"
+          npm install --prefix "$install_root" --ignore-scripts --no-audit --no-fund "$GITHUB_WORKSPACE/$package_file"
           "$install_root/node_modules/.bin/launch-triage" --version
           "$install_root/node_modules/.bin/launch-triage" --help
+
+  npm-12:
+    name: npm 12 release compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          package-manager-cache: false
+
+      - name: Install the release npm version
+        run: npm install -g npm@12.0.2
+
+      - name: Run calibration suite
+        run: npm test

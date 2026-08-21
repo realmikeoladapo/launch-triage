@@ -33,6 +33,15 @@ function runNpm(args, options) {
   return execFileSync('npm', args, options);
 }
 
+function packedPackageMetadata(raw) {
+  const result = JSON.parse(raw);
+  const entries = Array.isArray(result) ? result : Object.values(result);
+  assert.equal(entries.length, 1, 'expected exactly one packed package');
+  const [packed] = entries;
+  assert.ok(packed && Array.isArray(packed.files), 'npm pack returned invalid package metadata');
+  return packed;
+}
+
 function write(root, path, content) {
   const full = join(root, path);
   mkdirSync(dirname(full), { recursive: true });
@@ -153,7 +162,7 @@ test('CLI validates help, version, options, targets, dates, and finding threshol
   const help = run(['--help']);
   assert.equal(help.status, 0);
   assert.match(help.stdout, /Usage:/);
-  assert.equal(run(['--version']).stdout.trim(), '1.2.0');
+  assert.equal(run(['--version']).stdout.trim(), '1.2.1');
 
   for (const args of [
     ['--bogus'],
@@ -398,14 +407,28 @@ test('Launch Triage can scan itself without app-only false positives', (t) => {
   assert.deepEqual(self.payload.findings, []);
 });
 
+test('npm pack metadata supports npm 11 and npm 12 JSON output', () => {
+  const metadata = { filename: 'launch-triage.tgz', files: [] };
+  assert.deepEqual(packedPackageMetadata(JSON.stringify([metadata])), metadata);
+  assert.deepEqual(packedPackageMetadata(JSON.stringify({ 'launch-triage': metadata })), metadata);
+  assert.throws(
+    () => packedPackageMetadata(JSON.stringify({})),
+    /expected exactly one packed package/,
+  );
+  assert.throws(
+    () => packedPackageMetadata(JSON.stringify({ first: metadata, second: metadata })),
+    /expected exactly one packed package/,
+  );
+});
+
 test('packed CLI and composite action execute the release payload', (t) => {
   const work = workspace(t);
   const app = join(work, 'app');
   makeFixture(app);
   const npmEnv = { ...process.env, npm_config_dry_run: 'false' };
 
-  const [packed] = JSON.parse(runNpm([
-    'pack', '--json', '--pack-destination', work,
+  const packed = packedPackageMetadata(runNpm([
+    'pack', '--json', '--ignore-scripts', '--pack-destination', work,
   ], {
     cwd: repo,
     encoding: 'utf8',
@@ -429,7 +452,7 @@ test('packed CLI and composite action execute the release payload', (t) => {
   const packagePath = join(work, packed.filename);
   const installRoot = join(work, 'installed-package');
   runNpm([
-    'install', '--prefix', installRoot, '--ignore-scripts', packagePath,
+    'install', '--prefix', installRoot, '--ignore-scripts', '--no-audit', '--no-fund', packagePath,
   ], { cwd: work, stdio: ['ignore', 'pipe', 'pipe'], env: npmEnv });
   const packageReport = join(work, 'package-report.md');
   const installedBin = join(
