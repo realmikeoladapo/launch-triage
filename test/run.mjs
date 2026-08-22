@@ -162,7 +162,8 @@ test('CLI validates help, version, options, targets, dates, and finding threshol
   const help = run(['--help']);
   assert.equal(help.status, 0);
   assert.match(help.stdout, /Usage:/);
-  assert.equal(run(['--version']).stdout.trim(), '1.2.1');
+  const packageVersion = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')).version;
+  assert.equal(run(['--version']).stdout.trim(), packageVersion);
 
   for (const args of [
     ['--bogus'],

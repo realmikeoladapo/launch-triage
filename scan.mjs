@@ -591,7 +591,7 @@ function runRules(root, files, texts) {
     title: 'Provider credential found in source',
     consequence: 'A provider credential in source may allow unauthorised API access, disclose test or production data, and consume account resources.',
     action: 'Rotate the credential immediately, then remove it from the working tree and from git history.',
-    filter: (_m, _text, file) => !basename(file).startsWith('.env'),
+    filter: (_m, _text, file) => !basename(file).startsWith('.env') || /(?:example|sample|template)/i.test(basename(file)),
   });
 
   // 3. Environment files carrying secret-like values

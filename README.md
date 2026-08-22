@@ -74,7 +74,7 @@ steps:
   - uses: actions/checkout@v4
     with:
       fetch-depth: 0
-  - uses: realmikeoladapo/launch-triage@v1.2.1
+  - uses: realmikeoladapo/launch-triage@v1.2.2
     with:
       path: .
       fail-on: critical
@@ -218,7 +218,7 @@ audit is never presented as a clean result.
 - Dependency, build-output, cache, vendor, generated, editor, and test-worktree
   directories and generated dependency lockfiles are intentionally excluded.
   Supported files over 600 KiB or paths that cannot be read make coverage
-  Partial, are named in Markdown and JSON, and force exit code `1` instead of a
+  Partial, are named in Markdown and JSON, and force exit code `2` instead of a
   clean result.
 - Python, Ruby, Go, and PHP request-handler coverage is thinner than JavaScript
   and TypeScript coverage.

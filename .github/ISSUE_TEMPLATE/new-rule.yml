@@ -1,0 +1,74 @@
+name: New rule proposal
+description: Propose a new Launch Triage detection rule with an unsafe example and a safe control.
+title: "rule: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing a rule. Use synthetic examples only. Do not paste credentials, private client code, or unsanitised reports.
+
+  - type: input
+    id: problem
+    attributes:
+      label: Problem pattern
+      description: What production-readiness defect should Launch Triage detect?
+      placeholder: "Example: payment success is trusted from a client redirect without server verification"
+    validations:
+      required: true
+
+  - type: input
+    id: framework
+    attributes:
+      label: Framework or stack
+      description: Which framework, provider, language, or runtime does this affect?
+      placeholder: "Next.js + Paystack"
+    validations:
+      required: true
+
+  - type: textarea
+    id: unsafe
+    attributes:
+      label: Unsafe synthetic example
+      description: Show the smallest synthetic code/configuration that should trigger the rule.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: safe
+    attributes:
+      label: Safe control
+      description: Show a similar implementation that must not be flagged.
+      render: text
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Suggested severity
+      description: Choose the highest severity you think the evidence supports. Maintainers may recalibrate it.
+      options:
+        - Critical
+        - High
+        - Medium
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Why this matters
+      description: Link to provider/framework documentation or explain the concrete production consequence.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I used synthetic examples and did not include real credentials, private client code, or sensitive data.
+          required: true
+        - label: I included both an unsafe example and a safe control so false-positive behavior can be tested.
+          required: true

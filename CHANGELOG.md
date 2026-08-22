@@ -3,6 +3,17 @@
 All notable changes to Launch Triage are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.2.2] - 2026-08-22
+
+### Fixed
+
+- High-confidence provider credentials are detected even when they appear in
+  `.env.example`, `.env.sample`, or other environment-template files.
+- The README now documents partial file coverage with the same operational exit
+  code (`2`) used by the CLI.
+- The npm release workflow publishes only from a release tag that exactly
+  matches the version in `package.json`.
+
 ## [1.2.1] - 2026-08-21
 
 ### Fixed
@@ -45,6 +56,7 @@ All notable changes to Launch Triage are documented here. The project follows
 - Optional npm audit, JSON output, CI thresholds, and GitHub annotations.
 - Composite GitHub Action and OIDC-ready release workflow.
 
+[1.2.2]: https://www.npmjs.com/package/launch-triage/v/1.2.2
 [1.2.1]: https://www.npmjs.com/package/launch-triage/v/1.2.1
 [1.2.0]: https://github.com/realmikeoladapo/launch-triage/releases/tag/v1.2.0
 [1.1.0]: https://www.npmjs.com/package/launch-triage/v/1.1.0
