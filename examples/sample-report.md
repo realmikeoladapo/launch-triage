@@ -4,7 +4,7 @@ Client: Example organisation
 Product: Example App
 Review date: 2026-08-20
 Prepared by: Example reviewer
-Generated with: Launch Triage v1.2.1
+Generated with: Launch Triage v1.2.2
 Dependency audit: Not requested
 Coverage: Complete: 27 supported files read
 
