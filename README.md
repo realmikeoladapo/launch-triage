@@ -228,6 +228,10 @@ Open every flagged file and confirm the finding before acting on or sharing a
 report. Never paste a real credential, private client source, or unsanitised
 report into a public issue.
 
+If you would rather have someone inspect the findings and fix the release path,
+I offer this as a paid Launch Rescue engagement:
+https://mikeoladapo.com/launch-rescue/
+
 ## Contributing and security
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before proposing a rule. Accuracy changes
