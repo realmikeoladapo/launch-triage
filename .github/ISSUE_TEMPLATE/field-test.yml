@@ -1,0 +1,99 @@
+name: Field-test report
+description: Share sanitized evidence from running Launch Triage on a real repository.
+title: "field test: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for testing Launch Triage. Do not paste credentials, private source code, customer data, absolute workstation paths, or an unsanitized generated report. Synthetic examples are preferred.
+
+  - type: input
+    id: version
+    attributes:
+      label: Launch Triage version
+      placeholder: "1.2.2"
+    validations:
+      required: true
+
+  - type: input
+    id: stack
+    attributes:
+      label: Stack and project type
+      placeholder: "Next.js 16 + Supabase, SaaS web application"
+    validations:
+      required: true
+
+  - type: input
+    id: file_count
+    attributes:
+      label: Supported files scanned
+      placeholder: "184"
+    validations:
+      required: true
+
+  - type: textarea
+    id: confirmed
+    attributes:
+      label: Confirmed findings
+      description: List rule IDs and a sanitized explanation of what was real.
+      placeholder: "AUTH-1: one admin mutation route had no effective guard."
+    validations:
+      required: true
+
+  - type: textarea
+    id: false_positives
+    attributes:
+      label: False positives
+      description: List rule IDs that were not real defects and explain the effective control.
+      placeholder: "OPS-3: rate limiting is enforced by the API gateway."
+    validations:
+      required: true
+
+  - type: textarea
+    id: missed
+    attributes:
+      label: Important problem the scanner missed
+      description: Use a synthetic description; do not paste private code.
+      placeholder: "Payment success was trusted from a browser redirect without server-side verification."
+    validations:
+      required: true
+
+  - type: input
+    id: review_time
+    attributes:
+      label: Approximate human review time
+      placeholder: "18 minutes"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: decision
+    attributes:
+      label: Did the report change a decision?
+      options:
+        - Yes — launch or handover was paused
+        - Yes — remediation priorities changed
+        - No — it confirmed an existing assessment
+        - No — it was not useful enough
+    validations:
+      required: true
+
+  - type: dropdown
+    id: quote_permission
+    attributes:
+      label: May this feedback be quoted anonymously?
+      options:
+        - Yes
+        - No
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I removed credentials, private source, customer information, repository-identifying details, and absolute paths.
+          required: true
+        - label: I manually inspected the reported files before classifying findings as confirmed or false positives.
+          required: true
