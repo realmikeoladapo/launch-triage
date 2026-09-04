@@ -42,6 +42,14 @@ The default Markdown report is written to
 `output/triage-<repository>-<local-date>.md`. See the
 [sample report](examples/sample-report.md).
 
+### Join the field test
+
+Running Launch Triage on a real repository? The
+[field-test guide](docs/field-test.md) explains how to share confirmed findings,
+false positives, and missed problems without posting private source, credentials,
+or an unsanitized report. Structured field-test reports help determine which
+roadmap work should be built next.
+
 ### Options
 
 | Flag | Effect |
