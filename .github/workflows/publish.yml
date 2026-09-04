@@ -1,26 +1,36 @@
 name: Publish to npm
 
-# Releases publish only from an immutable GitHub release tag. The tag must
-# exactly match package.json (v<version>) before npm authentication is used.
+# Normal releases publish from an immutable GitHub release tag. The temporary
+# push trigger below bootstraps v1.2.2 through this same trusted workflow, then
+# will be removed after the release succeeds.
 
 on:
   release:
     types: [published]
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish.yml'
 
 permissions:
-  contents: read
+  contents: write
   # Required for npm trusted publishing. This mints the short-lived OIDC token
   # and lets npm attach provenance linking the tarball to this workflow run.
   id-token: write
 
 jobs:
   publish:
+    if: >-
+      github.event_name == 'release' ||
+      (github.event_name == 'push' && contains(github.event.head_commit.message, '[release-v1.2.2]'))
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || 'v1.2.2' }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.sha }}
 
       - uses: actions/setup-node@v7
         with:
@@ -35,13 +45,15 @@ jobs:
           npm --version
 
       - name: Verify release tag matches package version
-        env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           VERSION=$(node -p "require('./package.json').version")
           EXPECTED_TAG="v$VERSION"
           if [ "$RELEASE_TAG" != "$EXPECTED_TAG" ]; then
             echo "::error::Release tag $RELEASE_TAG does not match package version $VERSION (expected $EXPECTED_TAG)."
+            exit 1
+          fi
+          if [ "${{ github.event_name }}" = "push" ] && [ "$VERSION" != "1.2.2" ]; then
+            echo "::error::The one-time bootstrap may publish only launch-triage@1.2.2."
             exit 1
           fi
           echo "Release tag $RELEASE_TAG matches package version $VERSION"
@@ -63,3 +75,40 @@ jobs:
         # No NPM_TOKEN. Authentication is the OIDC token from id-token: write,
         # and provenance is generated automatically by trusted publishing.
         run: npm publish --access public
+
+      - name: Create the v1.2.2 GitHub release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > /tmp/release-notes.md <<'NOTES'
+          Launch Triage 1.2.2 is a focused hardening release that improves
+          credential detection and makes the release path more reliable.
+
+          Highlights:
+
+          - detects high-confidence provider credentials in `.env.example`,
+            `.env.sample`, and other environment-template files
+          - preserves redaction and context-aware exposure grading
+          - documents incomplete file coverage with the correct operational exit code
+          - keeps CLI version tests aligned with package metadata
+          - requires the GitHub release tag to match `package.json` before publishing
+          - publishes only from immutable GitHub release events after this bootstrap
+          - adds a structured new-rule proposal form
+
+          Install:
+
+          `npx --yes launch-triage@1.2.2 .`
+
+          GitHub Action:
+
+          `uses: realmikeoladapo/launch-triage@v1.2.2`
+
+          This release does not add new rule categories. It hardens the existing
+          scanner and release contract. A clean scan remains evidence for human
+          review, not proof that a product is safe to launch.
+          NOTES
+          gh release create "$RELEASE_TAG" \
+            --target "$GITHUB_SHA" \
+            --title "Launch Triage 1.2.2" \
+            --notes-file /tmp/release-notes.md
